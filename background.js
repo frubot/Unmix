@@ -111,9 +111,22 @@ async function releaseTab(tabId) {
   if (entry && !entry.wasMuted) {
     try { await chrome.tabs.update(tabId, { muted: false }); } catch (e) {}
   }
-  if (captured.size === 0) {
+  // `captured` is in-memory and lost on service worker restarts, so the
+  // offscreen document (which actually owns the pipelines) decides whether
+  // it can be closed.
+  if ((await remainingPipelines()) === 0) {
     try { await chrome.offscreen.closeDocument(); } catch (e) {}
+    captured.clear();
+    await unmuteLeftovers();
   }
+}
+
+async function remainingPipelines() {
+  if (!(await chrome.offscreen.hasDocument())) return 0;
+  const res = await sendToOffscreen({ type: 'list' }).catch(() => null);
+  // If the doc exists but won't answer, don't close it — it may still hold
+  // live captures. Chrome reaps silent AUDIO_PLAYBACK docs on its own.
+  return res && Array.isArray(res.tabs) ? res.tabs.length : 1;
 }
 
 async function syncFromOffscreen() {
@@ -132,7 +145,11 @@ async function syncFromOffscreen() {
       }
     }
   }
-  // Unmute tabs we muted but are no longer capturing (SW/offscreen restart leftovers).
+  await unmuteLeftovers();
+}
+
+// Unmute tabs we muted but are no longer capturing (SW/offscreen restart leftovers).
+async function unmuteLeftovers() {
   try {
     const all = await chrome.tabs.query({});
     for (const t of all) {
@@ -157,3 +174,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     stopCapture(tabId).catch(() => {});
   }
 });
+
+// The service worker may have restarted with an empty `captured` map while
+// captures are still live in the offscreen document — rebuild state from it.
+syncFromOffscreen().catch(() => {});
