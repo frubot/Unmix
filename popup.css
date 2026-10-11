@@ -1,0 +1,108 @@
+:root { color-scheme: dark; }
+
+* { box-sizing: border-box; }
+
+body {
+  width: 340px;
+  margin: 0;
+  font: 12px/1.45 "Segoe UI", "Yu Gothic UI", sans-serif;
+  background: #16181d;
+  color: #e6e6e6;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid #2a2e37;
+  position: sticky;
+  top: 0;
+  background: #16181d;
+  z-index: 1;
+}
+
+.logo { font-weight: 700; letter-spacing: 0.5px; }
+.hint { color: #8b93a5; font-size: 11px; }
+
+.row {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #21242c;
+  align-items: flex-start;
+}
+.row.on { background: #1b2436; }
+.row.this .title::after {
+  content: "このタブ";
+  margin-left: 6px;
+  font-size: 10px;
+  color: #7aa2ff;
+}
+
+.fav { width: 18px; height: 18px; flex: none; margin-top: 1px; }
+.main { flex: 1; min-width: 0; }
+
+.title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 4px;
+}
+
+.ctl { display: flex; align-items: center; gap: 5px; margin-top: 3px; }
+.lbl { color: #8b93a5; font-size: 10px; width: 18px; }
+
+input[type="range"] { flex: 1; min-width: 0; height: 14px; accent-color: #7aa2ff; }
+
+button {
+  background: #262b36;
+  color: #dfe4ee;
+  border: 1px solid #353c4b;
+  border-radius: 5px;
+  padding: 1px 7px;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 18px;
+}
+button:hover { background: #313949; }
+button.sel { background: #3b5bdb; border-color: #3b5bdb; color: #fff; }
+
+.panval {
+  width: 30px;
+  text-align: center;
+  color: #9fb4ff;
+  font-variant-numeric: tabular-nums;
+}
+.volval {
+  width: 34px;
+  text-align: right;
+  color: #8b93a5;
+  font-variant-numeric: tabular-nums;
+}
+
+.badge {
+  font-size: 10px;
+  color: #8ff0b3;
+  border: 1px solid #2f6b46;
+  border-radius: 4px;
+  padding: 0 5px;
+  flex: none;
+  line-height: 16px;
+}
+
+.err { color: #ff9a9a; font-size: 10px; flex-basis: 100%; }
+
+#empty { padding: 18px 14px; color: #8b93a5; }
+
+.toggle {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: #7aa2ff;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.toggle:hover { background: #1d2129; }
