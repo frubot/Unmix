@@ -1,6 +1,21 @@
 // tabId -> { tabId, ctx, stream, source, panner, gain, pan, volume }
 const pipelines = new Map();
 
+// Chrome closes AUDIO_PLAYBACK offscreen docs after ~30s of silence, which would
+// drop captures of paused or not-yet-audible tabs. Emit an inaudible 20 kHz
+// tone so the document always counts as playing audio.
+const keepAliveCtx = new AudioContext();
+{
+  const osc = keepAliveCtx.createOscillator();
+  const g = keepAliveCtx.createGain();
+  osc.frequency.value = 20000;
+  g.gain.value = 0.01;
+  osc.connect(g);
+  g.connect(keepAliveCtx.destination);
+  osc.start();
+}
+keepAliveCtx.resume().catch(() => {});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.target !== 'offscreen') return;
   (async () => {

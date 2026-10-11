@@ -47,6 +47,7 @@ async function refresh() {
   for (const t of audible) {
     if (!seen.has(t.id)) { rows.push(t); seen.add(t.id); }
   }
+  if (active[0] && !seen.has(active[0].id)) { rows.push(active[0]); seen.add(active[0].id); }
   rows.sort((a, b) => (b.id === activeId) - (a.id === activeId));
 
   const others = showAll ? all.filter((t) => !seen.has(t.id) && !t.discarded) : [];
@@ -153,7 +154,7 @@ function rowEl(t, isActive, isOther) {
   volInput.addEventListener('input', async () => {
     const v = +volInput.value;
     volVal.textContent = Math.round(v * 100) + '%';
-    if (state.captured[t.id]) {
+    if (await ensureStarted()) {
       state.captured[t.id].volume = v;
       send({ type: 'set', tabId: t.id, volume: v }).catch(() => {});
     }
