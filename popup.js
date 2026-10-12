@@ -66,9 +66,12 @@ function rowEl(t, isActive, isOther) {
   const cap = state.captured[t.id];
   const pan = cap ? cap.pan : 0;
   const vol = cap ? cap.volume : 1;
+  // Capture requires the extension to be invoked while the tab is active,
+  // so uncaptured background tabs can only navigate to the tab first.
+  const gotoTab = !cap && !isActive;
 
   const row = document.createElement('div');
-  row.className = 'row' + (cap ? ' on' : '') + (isActive ? ' this' : '') + (isOther ? ' other' : '');
+  row.className = 'row' + (cap ? ' on' : '') + (isActive ? ' this' : '') + (isOther ? ' other' : '') + (gotoTab ? ' goto' : '');
   row.innerHTML = `
     <img class="fav" src="${esc(t.favIconUrl || FALLBACK_FAV)}" alt="">
     <div class="main">
@@ -86,6 +89,7 @@ function rowEl(t, isActive, isOther) {
         <span class="volval">${Math.round(vol * 100)}%</span>
         <span class="live"></span>
       </div>
+      ${gotoTab ? '<div class="go">クリックでこのタブへ移動 →</div>' : ''}
       <div class="err"></div>
     </div>`;
 
@@ -119,6 +123,24 @@ function rowEl(t, isActive, isOther) {
     row.classList.add('on');
   };
   if (cap) showLive();
+
+  if (gotoTab) {
+    panInput.disabled = volInput.disabled = true;
+    presets.forEach((b) => (b.disabled = true));
+    row.addEventListener('click', async () => {
+      err.textContent = '';
+      try {
+        if (t.windowId != null) {
+          await chrome.windows.update(t.windowId, { focused: true }).catch(() => {});
+        }
+        await chrome.tabs.update(t.id, { active: true });
+      } catch (e) {
+        err.textContent = 'そのタブはもう存在しません。';
+        refresh();
+      }
+    });
+    return row;
+  }
 
   const ensureStarted = async () => {
     if (state.captured[t.id]) return true;
