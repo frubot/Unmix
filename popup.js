@@ -11,6 +11,8 @@ const $toggle = document.getElementById('showall');
 let showAll = false;
 let state = { captured: {} };
 const starting = new Set();
+let activeSlider = null;
+let refreshPending = false;
 
 const send = (msg) => chrome.runtime.sendMessage({ ...msg, target: 'sw' });
 
@@ -27,6 +29,10 @@ function panLabel(p) {
 }
 
 async function refresh() {
+  if (activeSlider) {
+    refreshPending = true;
+    return;
+  }
   const res = await send({ type: 'get-state' }).catch(() => null);
   state = res && res.captured ? res : { captured: {} };
 
@@ -106,6 +112,10 @@ function rowEl(t, isActive, isOther) {
   markPresets(pan);
 
   const showLive = () => {
+    if (activeSlider === volInput) {
+      volInput.addEventListener('change', showLive, { once: true });
+      return;
+    }
     if (!live.querySelector('.rel')) {
       const badge = document.createElement('span');
       badge.className = 'badge';
@@ -194,6 +204,19 @@ $toggle.addEventListener('click', () => {
   showAll = !showAll;
   refresh();
 });
+
+document.addEventListener('pointerdown', (e) => {
+  if (e.target.matches('input[type=range]')) activeSlider = e.target;
+});
+const endSliderDrag = () => {
+  activeSlider = null;
+  if (refreshPending) {
+    refreshPending = false;
+    refresh();
+  }
+};
+document.addEventListener('pointerup', endSliderDrag);
+document.addEventListener('pointercancel', endSliderDrag);
 
 // Stream ended while popup is open -> reflect released state.
 chrome.runtime.onMessage.addListener((msg) => {
