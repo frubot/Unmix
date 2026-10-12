@@ -76,6 +76,7 @@ function rowEl(t, isActive, isOther) {
     <img class="fav" src="${esc(t.favIconUrl || FALLBACK_FAV)}" alt="">
     <div class="main">
       <div class="title" title="${esc(t.title || '')}">${esc(t.title || '(no title)')}</div>
+      ${gotoTab ? '<div class="go">クリックでこのタブへ移動 →</div>' : `
       <div class="ctl">
         <button data-p="-1" title="左耳のみ">L</button>
         <input class="pan" type="range" min="-1" max="1" step="0.01" value="${pan}">
@@ -88,8 +89,7 @@ function rowEl(t, isActive, isOther) {
         <input class="vol" type="range" min="0" max="2" step="0.01" value="${vol}">
         <span class="volval">${Math.round(vol * 100)}%</span>
         <span class="live"></span>
-      </div>
-      ${gotoTab ? '<div class="go">クリックでこのタブへ移動 →</div>' : ''}
+      </div>`}
       <div class="err"></div>
     </div>`;
 
@@ -125,8 +125,6 @@ function rowEl(t, isActive, isOther) {
   if (cap) showLive();
 
   if (gotoTab) {
-    panInput.disabled = volInput.disabled = true;
-    presets.forEach((b) => (b.disabled = true));
     row.addEventListener('click', async () => {
       err.textContent = '';
       try {

@@ -35,7 +35,6 @@ header {
 .row.on { background: #1b2436; }
 .row.goto { cursor: pointer; }
 .row.goto:hover { background: #1d2129; }
-.row.goto .ctl { opacity: 0.35; pointer-events: none; }
 .go {
   color: #7aa2ff;
   font-size: 11px;
