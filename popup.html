@@ -8,7 +8,14 @@
 <header>
   <span class="logo">Unmix</span>
   <span class="hint">タブごとに L / R 振り分け</span>
+  <button id="asmr" class="mode">ASMR</button>
 </header>
+<div id="asmrbar" hidden>
+  <span class="lbl">深さ</span>
+  <input id="depth" type="range" min="0" max="1" step="0.01">
+  <button data-mirror="1">逆向き</button>
+  <button data-mirror="0">同じ向き</button>
+</div>
 <div id="tabs"></div>
 <div id="empty" hidden>
   音が出ているタブがありません。<br>

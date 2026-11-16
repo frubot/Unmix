@@ -1,6 +1,6 @@
 const OFFSCREEN_URL = 'offscreen.html';
 
-// tabId -> { pan, volume, wasMuted }
+// tabId -> { pan, volume, role, wasMuted }
 const captured = new Map();
 let creatingOffscreen = null;
 
@@ -20,7 +20,7 @@ async function handle(msg) {
       await syncFromOffscreen();
       return {
         captured: Object.fromEntries(
-          [...captured].map(([id, v]) => [id, { pan: v.pan, volume: v.volume }])
+          [...captured].map(([id, v]) => [id, { pan: v.pan, volume: v.volume, role: v.role }])
         )
       };
     }
@@ -28,8 +28,16 @@ async function handle(msg) {
       await startCapture(msg.tabId, msg.pan, msg.volume);
       return { ok: true };
     case 'set':
-      await setParams(msg.tabId, msg.pan, msg.volume);
+      await setParams(msg.tabId, msg.pan, msg.volume, msg.role);
       return { ok: true };
+    case 'asmr-config':
+      if (await chrome.offscreen.hasDocument()) {
+        await sendToOffscreen({ type: 'asmr-config', depth: msg.depth, mirror: msg.mirror }).catch(() => {});
+      }
+      return { ok: true };
+    case 'live':
+      if (!(await chrome.offscreen.hasDocument())) return { pans: {} };
+      return (await sendToOffscreen({ type: 'live' }).catch(() => null)) || { pans: {} };
     case 'stop':
       await stopCapture(msg.tabId);
       return { ok: true };
@@ -88,15 +96,21 @@ async function startCapture(tabId, pan = 0, volume = 1) {
   if (!wasMuted) {
     try { await chrome.tabs.update(tabId, { muted: true }); } catch (e) {}
   }
-  captured.set(tabId, { pan, volume, wasMuted });
+  captured.set(tabId, { pan, volume, role: 'none', wasMuted });
 }
 
-async function setParams(tabId, pan, volume) {
+async function setParams(tabId, pan, volume, role) {
   const e = captured.get(Number(tabId));
   if (!e) return;
   if (pan != null) e.pan = pan;
   if (volume != null) e.volume = volume;
-  await sendToOffscreen({ type: 'set', tabId: Number(tabId), pan: e.pan, volume: e.volume }).catch(() => {});
+  // Role is forwarded only when explicitly changed: the offscreen document
+  // reassigns roles itself (e.g. only one whisper source), so `e.role` may be stale.
+  const res = await sendToOffscreen({
+    type: 'set', tabId: Number(tabId), pan: e.pan, volume: e.volume, role: role ?? undefined
+  }).catch(() => null);
+  if (res && res.error) throw new Error(res.error);
+  if (role != null) e.role = role;
 }
 
 async function stopCapture(tabId) {
@@ -141,7 +155,7 @@ async function syncFromOffscreen() {
       }
       for (const t of res.tabs) {
         const prev = captured.get(t.tabId) || {};
-        captured.set(t.tabId, { pan: t.pan, volume: t.volume, wasMuted: prev.wasMuted ?? false });
+        captured.set(t.tabId, { pan: t.pan, volume: t.volume, role: t.role || 'none', wasMuted: prev.wasMuted ?? false });
       }
     }
   }

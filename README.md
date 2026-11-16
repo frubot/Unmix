@@ -20,12 +20,26 @@
 - キャプチャ中にタブのミュートを手動で解除すると、そのタブは自動で解除される
 - 開始後のパン/音量変更・解除はどのタブのポップアップからでもOK
 
+## ASMR モード
+
+左右を行き来する囁きに合わせて、別タブの音楽を逆側(または同じ側)へ自動で動かすモード。
+
+1. ポップアップ右上の「ASMR」を ON
+2. 囁き(ASMR 動画など)のタブで「囁き」、音楽のタブで「追従」を選ぶ
+3. 「深さ」で追従タブを振る幅、「逆向き / 同じ向き」で動く方向を選ぶ
+
+- 囁きタブは 1 つだけ。別のタブを「囁き」にすると前のタブは解除される
+- 囁きと音楽が別々のタブであることが前提(1 本の動画に焼き込まれた BGM は分離できない)
+- 位置の検出から追従まで 0.1〜0.3 秒ほど遅れる
+- 囁きが途切れている間は直前の位置を保持する
+
 ## 仕様メモ
 
 - キャプチャ開始には Chrome の `activeTab` 仕様上「そのタブ上で拡張機能を起動(アイコンクリック)」している必要がある。失敗したら対象タブを開いてアイコンをクリックしてから再試行
 - `tabCapture` + Offscreen Document + `StereoPannerNode` / `GainNode` で処理
 - Offscreen Document は無音が30秒続くと Chrome 側で自動終了されるため、非可聴トーン(20 kHz)で生存維持している
-- `test.html` をブラウザで開くと左右確認用のテストトーンが鳴らせる
+- ASMR モードは囁きタブの 1〜8 kHz 帯の左右音量差(±12 dB で端)を AudioWorklet で測り、追従タブの `StereoPannerNode` を動かす
+- `test.html` をブラウザで開くと左右確認用のテストトーンが鳴らせる(ASMR モード用のささやき風ノイズ・連続トーンもある)
 - 必要 Chrome バージョン: 116+
 
 ## ファイル
@@ -34,6 +48,7 @@
 |---|---|
 | `manifest.json` | MV3 マニフェスト (tabCapture / offscreen / tabs / activeTab) |
 | `background.js` | サービスワーカー。stream ID 取得・offscreen 管理・タブミュート制御 |
-| `offscreen.js` | getUserMedia でタブ音声を取得し AudioContext でパン/音量適用 |
+| `offscreen.js` | getUserMedia でタブ音声を取得し AudioContext でパン/音量適用。ASMR モードの追従処理 |
+| `asmr-meter.js` | 囁きタブの左右音量を測る AudioWorklet |
 | `popup.*` | タブ一覧 + パン/音量 UI |
 | `test.html` | 動作確認用テストトーン |

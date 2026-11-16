@@ -7,6 +7,19 @@ const FALLBACK_FAV =
 const $tabs = document.getElementById('tabs');
 const $empty = document.getElementById('empty');
 const $toggle = document.getElementById('showall');
+const $asmr = document.getElementById('asmr');
+const $asmrbar = document.getElementById('asmrbar');
+const $depth = document.getElementById('depth');
+const $dirBtns = [...$asmrbar.querySelectorAll('button[data-mirror]')];
+
+// Shared with offscreen.js (same extension origin), which reads depth/mirror on startup.
+const ASMR_KEY = 'unmix.asmr';
+const asmrCfg = { on: false, depth: 1, mirror: true };
+try {
+  Object.assign(asmrCfg, JSON.parse(localStorage.getItem(ASMR_KEY)) || {});
+} catch (e) {}
+// tabId -> fn(pan) for follower rows whose pan is driven by the whisper tab
+let liveRows = new Map();
 
 let showAll = false;
 let state = { captured: {} };
@@ -35,6 +48,7 @@ async function refresh() {
   }
   const res = await send({ type: 'get-state' }).catch(() => null);
   state = res && res.captured ? res : { captured: {} };
+  if (Object.values(state.captured).some((c) => c.role && c.role !== 'none')) asmrCfg.on = true;
 
   const [audible, active, all] = await Promise.all([
     chrome.tabs.query({ audible: true }),
@@ -64,6 +78,8 @@ function render(rows, others, activeId) {
   $tabs.textContent = '';
   const all = [...rows, ...others];
   $empty.hidden = all.length > 0;
+  liveRows = new Map();
+  renderAsmrBar();
   for (const t of all) $tabs.appendChild(rowEl(t, t.id === activeId, others.includes(t)));
   $toggle.textContent = showAll ? '他のタブを隠す ▴' : '他のタブも表示 ▾';
 }
@@ -72,6 +88,9 @@ function rowEl(t, isActive, isOther) {
   const cap = state.captured[t.id];
   const pan = cap ? cap.pan : 0;
   const vol = cap ? cap.volume : 1;
+  const role = (cap && cap.role) || 'none';
+  const following = role === 'follow';
+  const dis = following ? ' disabled' : '';
   // Capture requires the extension to be invoked while the tab is active,
   // so uncaptured background tabs can only navigate to the tab first.
   const gotoTab = !cap && !isActive;
@@ -84,10 +103,10 @@ function rowEl(t, isActive, isOther) {
       <div class="title" title="${esc(t.title || '')}">${esc(t.title || '(no title)')}</div>
       ${gotoTab ? '<div class="go">クリックでこのタブへ移動 →</div>' : `
       <div class="ctl">
-        <button data-p="-1" title="左耳のみ">L</button>
-        <input class="pan" type="range" min="-1" max="1" step="0.01" value="${pan}">
-        <button data-p="0" title="中央">C</button>
-        <button data-p="1" title="右耳のみ">R</button>
+        <button data-p="-1" title="左耳のみ"${dis}>L</button>
+        <input class="pan" type="range" min="-1" max="1" step="0.01" value="${pan}"${dis}>
+        <button data-p="0" title="中央"${dis}>C</button>
+        <button data-p="1" title="右耳のみ"${dis}>R</button>
         <span class="panval">${panLabel(pan)}</span>
       </div>
       <div class="ctl">
@@ -95,7 +114,12 @@ function rowEl(t, isActive, isOther) {
         <input class="vol" type="range" min="0" max="2" step="0.01" value="${vol}">
         <span class="volval">${Math.round(vol * 100)}%</span>
         <span class="live"></span>
-      </div>`}
+      </div>
+      ${asmrCfg.on ? `
+      <div class="ctl">
+        <button data-role="whisper" title="このタブの囁きの位置を検出する">囁き</button>
+        <button data-role="follow" title="囁きの位置に合わせて左右に動かす">追従</button>
+      </div>` : ''}`}
       <div class="err"></div>
     </div>`;
 
@@ -106,6 +130,7 @@ function rowEl(t, isActive, isOther) {
   const live = row.querySelector('.live');
   const err = row.querySelector('.err');
   const presets = [...row.querySelectorAll('button[data-p]')];
+  const roleBtns = [...row.querySelectorAll('button[data-role]')];
 
   const markPresets = (p) =>
     presets.forEach((b) => b.classList.toggle('sel', +b.dataset.p === (Math.abs(p) < 0.02 ? 0 : p <= -0.99 ? -1 : p >= 0.99 ? 1 : NaN)));
@@ -197,8 +222,82 @@ function rowEl(t, isActive, isOther) {
     })
   );
 
+  roleBtns.forEach((b) => {
+    b.classList.toggle('sel', b.dataset.role === role);
+    b.addEventListener('click', async () => {
+      const next = b.dataset.role === role ? 'none' : b.dataset.role;
+      if (!(await ensureStarted())) return;
+      const res = await send({ type: 'set', tabId: t.id, role: next }).catch((e) => ({ error: String(e) }));
+      if (res && res.error) {
+        err.textContent = '設定に失敗しました。 (' + res.error + ')';
+        return;
+      }
+      refresh();
+    });
+  });
+
+  if (following) {
+    liveRows.set(t.id, (v) => {
+      panInput.value = v;
+      panVal.textContent = panLabel(v);
+      markPresets(v);
+    });
+  }
+
   return row;
 }
+
+function renderAsmrBar() {
+  $asmr.classList.toggle('sel', asmrCfg.on);
+  $asmrbar.hidden = !asmrCfg.on;
+  $depth.value = asmrCfg.depth;
+  $dirBtns.forEach((b) => b.classList.toggle('sel', (b.dataset.mirror === '1') === asmrCfg.mirror));
+}
+
+function saveAsmr() {
+  try { localStorage.setItem(ASMR_KEY, JSON.stringify(asmrCfg)); } catch (e) {}
+}
+
+function pushAsmr() {
+  saveAsmr();
+  send({ type: 'asmr-config', depth: asmrCfg.depth, mirror: asmrCfg.mirror }).catch(() => {});
+}
+
+$asmr.addEventListener('click', async () => {
+  asmrCfg.on = !asmrCfg.on;
+  saveAsmr();
+  if (!asmrCfg.on) {
+    await Promise.all(
+      Object.entries(state.captured)
+        .filter(([, c]) => c.role && c.role !== 'none')
+        .map(([id]) => send({ type: 'set', tabId: +id, role: 'none' }).catch(() => {}))
+    );
+  }
+  refresh();
+});
+
+$depth.addEventListener('input', () => {
+  asmrCfg.depth = +$depth.value;
+  pushAsmr();
+});
+
+$dirBtns.forEach((b) =>
+  b.addEventListener('click', () => {
+    asmrCfg.mirror = b.dataset.mirror === '1';
+    pushAsmr();
+    renderAsmrBar();
+  })
+);
+
+setInterval(async () => {
+  if (!liveRows.size) return;
+  const res = await send({ type: 'live' }).catch(() => null);
+  if (!res || !res.pans) return;
+  for (const [id, v] of Object.entries(res.pans)) {
+    const update = liveRows.get(+id);
+    if (update && typeof v === 'number') update(v);
+  }
+}, 100);
 
 $toggle.addEventListener('click', () => {
   showAll = !showAll;

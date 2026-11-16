@@ -23,7 +23,22 @@ header {
 }
 
 .logo { font-weight: 700; letter-spacing: 0.5px; }
-.hint { color: #8b93a5; font-size: 11px; }
+.hint { color: #8b93a5; font-size: 11px; margin-left: auto; margin-right: 8px; }
+
+#asmrbar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #2a2e37;
+  background: #1a1d24;
+}
+#asmrbar[hidden] { display: none; }
+#asmrbar .lbl { width: auto; }
+
+input[type="range"]:disabled { opacity: 0.6; }
+button:disabled { opacity: 0.45; cursor: default; }
+button:disabled:hover { background: #262b36; }
 
 .row {
   display: flex;

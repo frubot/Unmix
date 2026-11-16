@@ -1,5 +1,23 @@
-// tabId -> { tabId, ctx, stream, source, panner, gain, pan, volume }
+// tabId -> { tabId, ctx, stream, source, panner, gain, pan, volume, role, livePan, meter }
+// role: 'none' | 'whisper' (ASMR source being analyzed) | 'follow' (pan driven by the whisper)
 const pipelines = new Map();
+
+// --- ASMR mode -------------------------------------------------------------
+// The whisper tab's left/right level difference is measured in the speech
+// band and mapped to a position (-1 = left .. 1 = right). Follower tabs are
+// panned to the opposite side (or the same side when `mirror` is false).
+const ASMR_KEY = 'unmix.asmr';
+const FULL_SCALE_DB = 12; // L/R level difference treated as fully one-sided
+const ABS_GATE = 3e-4; // ~-70 dBFS: below this the whisper is treated as silent
+const REL_GATE = 0.15; // ~-16 dB below the recent peak: pauses / background hiss
+const PEAK_DECAY = 3; // seconds
+const POS_SMOOTH = 0.08; // seconds
+const PAN_GLIDE = 0.1; // seconds
+
+const asmr = { depth: 1, mirror: true, pos: 0, peak: 0 };
+try {
+  applyAsmrConfig(JSON.parse(localStorage.getItem(ASMR_KEY)) || {});
+} catch (e) {}
 
 // Chrome closes AUDIO_PLAYBACK offscreen docs after ~30s of silence, which would
 // drop captures of paused or not-yet-audible tabs. Emit an inaudible 20 kHz
@@ -25,15 +43,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case 'add':
         return await add(msg);
       case 'set':
-        set(msg);
+        await set(msg);
         return { ok: true };
       case 'remove':
         await remove(Number(msg.tabId));
         return { ok: true };
+      case 'asmr-config':
+        applyAsmrConfig(msg);
+        applyFollowers();
+        return { ok: true };
       case 'list':
         return {
-          tabs: [...pipelines.values()].map((p) => ({ tabId: p.tabId, pan: p.pan, volume: p.volume }))
+          tabs: [...pipelines.values()].map((p) => ({
+            tabId: p.tabId, pan: p.pan, volume: p.volume, role: p.role
+          }))
         };
+      case 'live': {
+        const pans = {};
+        for (const p of pipelines.values()) if (p.role === 'follow') pans[p.tabId] = p.livePan;
+        return { pans };
+      }
     }
   })()
     .then((res) => sendResponse(res === undefined ? { ok: true } : res))
@@ -67,7 +96,10 @@ async function add({ tabId, streamId, pan = 0, volume = 1 }) {
   panner.connect(gain);
   gain.connect(ctx.destination);
 
-  const p = { tabId, ctx, stream, source, panner, gain, pan, volume };
+  const p = {
+    tabId, ctx, stream, source, panner, gain, pan, volume,
+    role: 'none', livePan: pan, meter: null, workletLoaded: null
+  };
   pipelines.set(tabId, p);
 
   const track = stream.getAudioTracks()[0];
@@ -81,22 +113,129 @@ async function add({ tabId, streamId, pan = 0, volume = 1 }) {
   return { ok: true };
 }
 
-function set({ tabId, pan, volume }) {
+async function set({ tabId, pan, volume, role }) {
   const p = pipelines.get(Number(tabId));
   if (!p) return;
   const t = p.ctx.currentTime;
   if (pan != null) {
     p.pan = pan;
-    p.panner.pan.setTargetAtTime(pan, t, 0.02);
+    if (p.role !== 'follow') glidePan(p, pan, 0.02);
   }
   if (volume != null) {
     p.volume = volume;
     p.gain.gain.setTargetAtTime(volume, t, 0.02);
   }
+  if (role != null) await setRole(p, role);
+}
+
+function glidePan(p, v, tau) {
+  p.livePan = v;
+  p.panner.pan.setTargetAtTime(v, p.ctx.currentTime, tau);
+}
+
+async function setRole(p, role) {
+  if (!['none', 'whisper', 'follow'].includes(role) || p.role === role) return;
+  const prev = p.role;
+  p.role = role;
+  if (prev === 'whisper') detachMeter(p);
+  if (prev === 'follow') glidePan(p, p.pan, 0.05);
+  if (role === 'whisper') {
+    // Only one whisper source at a time.
+    for (const o of pipelines.values()) {
+      if (o !== p && o.role === 'whisper') {
+        o.role = 'none';
+        detachMeter(o);
+      }
+    }
+    asmr.pos = 0;
+    asmr.peak = 0;
+    try {
+      await attachMeter(p);
+    } catch (e) {
+      if (p.role === 'whisper') p.role = 'none';
+      throw e;
+    }
+  }
+  applyFollowers();
+}
+
+async function attachMeter(p) {
+  const { ctx } = p;
+  if (!p.workletLoaded) p.workletLoaded = ctx.audioWorklet.addModule('asmr-meter.js');
+  try {
+    await p.workletLoaded;
+  } catch (e) {
+    p.workletLoaded = null;
+    throw e;
+  }
+  if (p.role !== 'whisper' || p.meter || pipelines.get(p.tabId) !== p) return;
+
+  // Analyze the original (pre-pan) signal, limited to the whisper/sibilance band.
+  const hp = new BiquadFilterNode(ctx, { type: 'highpass', frequency: 1000 });
+  const lp = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 8000 });
+  const node = new AudioWorkletNode(ctx, 'asmr-meter', {
+    channelCount: 2,
+    channelCountMode: 'explicit',
+    channelInterpretation: 'speakers'
+  });
+  // The meter outputs silence; connecting it keeps the graph pulling it.
+  const mute = new GainNode(ctx, { gain: 0 });
+  node.port.onmessage = (e) => onMeter(p, e.data);
+  p.source.connect(hp);
+  hp.connect(lp);
+  lp.connect(node);
+  node.connect(mute);
+  mute.connect(ctx.destination);
+  p.meter = { hp, lp, node, mute };
+}
+
+function detachMeter(p) {
+  const m = p.meter;
+  if (!m) return;
+  p.meter = null;
+  m.node.port.onmessage = null;
+  try { p.source.disconnect(m.hp); } catch (e) {}
+  for (const n of [m.hp, m.lp, m.node, m.mute]) {
+    try { n.disconnect(); } catch (e) {}
+  }
+  applyFollowers();
+}
+
+function onMeter(p, { l, r, dt }) {
+  if (p.role !== 'whisper' || !p.meter) return;
+  const lvl = Math.max(l, r);
+  asmr.peak = Math.max(lvl, asmr.peak * Math.exp(-dt / PEAK_DECAY));
+  // Hold the last position through pauses between phrases.
+  if (lvl < ABS_GATE || lvl < asmr.peak * REL_GATE) return;
+  const db = 20 * Math.log10((r + 1e-12) / (l + 1e-12));
+  const target = Math.max(-1, Math.min(1, db / FULL_SCALE_DB));
+  asmr.pos += (target - asmr.pos) * (1 - Math.exp(-dt / POS_SMOOTH));
+  applyFollowers();
+}
+
+function hasWhisper() {
+  for (const p of pipelines.values()) if (p.role === 'whisper' && p.meter) return true;
+  return false;
+}
+
+function applyFollowers() {
+  const active = hasWhisper();
+  const v = (asmr.mirror ? -1 : 1) * asmr.pos * asmr.depth;
+  for (const p of pipelines.values()) {
+    if (p.role !== 'follow') continue;
+    const target = active ? v : p.pan;
+    if (Math.abs(target - p.livePan) > 0.002) glidePan(p, target, PAN_GLIDE);
+  }
+}
+
+function applyAsmrConfig({ depth, mirror }) {
+  if (typeof depth === 'number' && isFinite(depth)) asmr.depth = Math.max(0, Math.min(1, depth));
+  if (typeof mirror === 'boolean') asmr.mirror = mirror;
 }
 
 function teardown(p) {
   pipelines.delete(p.tabId);
+  detachMeter(p);
   try { p.source.disconnect(); } catch (e) {}
   try { p.panner.disconnect(); } catch (e) {}
   try { p.gain.disconnect(); } catch (e) {}
