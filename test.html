@@ -30,9 +30,11 @@
 <h2>ASMR モード確認用</h2>
 <p>
   このページを2つ開き、片方で<code>ささやき風ノイズ</code>、もう片方で<code>連続トーン</code>を鳴らす。<br>
-  Unmix の ASMR モードでノイズ側を「囁き」、トーン側を「追従」にすると、トーンがノイズと逆側へ動く。
+  Unmix の ASMR モードでノイズ側を「囁き」、トーン側を「追従」にすると、トーンがノイズと逆側へ動く。<br>
+  <code>囁き＋耳かき風</code>は左右に別々の音が鳴るので、トーンは中央に留まる。
 </p>
 <button id="bWhisper">ささやき風ノイズ</button>
+<button id="bWhisperScratch">囁き＋耳かき風</button>
 <button id="bTone">連続トーン</button>
 <div id="status"></div>
 <script>
@@ -113,6 +115,66 @@ function startWhisper() {
   status.className = '';
 }
 
+// Whisper-like noise on one side and clicky ear-cleaning-like noise on the
+// other; the two swap sides every 6 s.
+function startWhisperScratch() {
+  ensureCtx();
+  stopAll();
+  const sr = ctx.sampleRate;
+  const mkNoise = (fill) => {
+    const buf = ctx.createBuffer(1, sr * 2, sr);
+    fill(buf.getChannelData(0));
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    return src;
+  };
+  const whisper = mkNoise((d) => { for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; });
+  const scratch = mkNoise((d) => {
+    for (let i = 0; i < d.length; i++) {
+      const stroke = (i / sr) % 0.6 < 0.4;
+      d[i] += stroke ? (Math.random() * 2 - 1) * 0.05 : 0;
+      if (stroke && Math.random() < 0.004) {
+        const amp = 0.5 + Math.random();
+        for (let k = 0; k < 200 && i + k < d.length; k++) d[i + k] += (Math.random() * 2 - 1) * amp * Math.exp(-k / 30);
+      }
+    }
+  });
+  const bp = ctx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = 2000;
+  bp.Q.value = 0.8;
+  const hp = ctx.createBiquadFilter();
+  hp.type = 'highpass';
+  hp.frequency.value = 3000;
+  const wg = ctx.createGain();
+  wg.gain.value = 0;
+  const sg = ctx.createGain();
+  sg.gain.value = 0.6;
+  const wp = ctx.createStereoPanner();
+  const sp = ctx.createStereoPanner();
+  whisper.connect(bp); bp.connect(wg); wg.connect(wp); wp.connect(ctx.destination);
+  scratch.connect(hp); hp.connect(sg); sg.connect(sp); sp.connect(ctx.destination);
+  whisper.start(); scratch.start();
+  extra = [whisper, scratch];
+  let side = -1;
+  const place = () => {
+    const t = ctx.currentTime;
+    wp.pan.setTargetAtTime(side, t, 0.3);
+    sp.pan.setTargetAtTime(-side, t, 0.3);
+    status.textContent = side < 0 ? 'WHISPER L / SCRATCH R' : 'SCRATCH L / WHISPER R';
+    status.className = '';
+  };
+  place();
+  let n = 0;
+  timer = setInterval(() => {
+    const t = ctx.currentTime;
+    wg.gain.setTargetAtTime(0.3, t, 0.05);
+    wg.gain.setTargetAtTime(0, t + 1.2, 0.08);
+    if (++n % 4 === 0) { side = -side; place(); }
+  }, 1500);
+}
+
 function startTone() {
   ensureCtx();
   stopAll();
@@ -132,6 +194,7 @@ function startTone() {
 
 document.getElementById('bStop').onclick = stopAll;
 document.getElementById('bWhisper').onclick = startWhisper;
+document.getElementById('bWhisperScratch').onclick = startWhisperScratch;
 document.getElementById('bTone').onclick = startTone;
 </script>
 </body>

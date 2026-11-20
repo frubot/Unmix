@@ -6,6 +6,8 @@ const pipelines = new Map();
 // The whisper tab's left/right level difference is measured in the speech
 // band and mapped to a position (-1 = left .. 1 = right). Follower tabs are
 // panned to the opposite side (or the same side when `mirror` is false).
+// When each ear seems to hear a different sound (e.g. whispering on one side
+// and ear cleaning on the other), followers are centered instead.
 const ASMR_KEY = 'unmix.asmr';
 const FULL_SCALE_DB = 12; // L/R level difference treated as fully one-sided
 const ABS_GATE = 3e-4; // ~-70 dBFS: below this the whisper is treated as silent
@@ -13,8 +15,20 @@ const REL_GATE = 0.15; // ~-16 dB below the recent peak: pauses / background his
 const PEAK_DECAY = 3; // seconds
 const POS_SMOOTH = 0.08; // seconds
 const PAN_GLIDE = 0.1; // seconds
+// "Both sides active" detection. Either of:
+//  - each ear hears a different sound (low L/R coherence while both are loud)
+//  - sub-bands lean to opposite sides (e.g. voice band left, bright scratching right)
+const COH_TWO = 0.7;
+const SIDE_DB = 6; // level difference counted as clearly one-sided
+const BAND_GATE = 0.1; // sub-band ignored below this fraction of the recent peak
+const TWO_SMOOTH = 0.3; // seconds
+const TWO_ON = 0.3; // share of recent frames showing both sides
+const BOTH_HOLD = 1.5; // seconds to stay centered after both sides were active
 
-const asmr = { depth: 1, mirror: true, pos: 0, peak: 0 };
+const asmr = {
+  depth: 1, mirror: true, pos: 0, peak: 0,
+  twoFrac: 0, bothHold: 0
+};
 try {
   applyAsmrConfig(JSON.parse(localStorage.getItem(ASMR_KEY)) || {});
 } catch (e) {}
@@ -149,6 +163,8 @@ async function setRole(p, role) {
     }
     asmr.pos = 0;
     asmr.peak = 0;
+    asmr.twoFrac = 0;
+    asmr.bothHold = 0;
     try {
       await attachMeter(p);
     } catch (e) {
@@ -170,9 +186,7 @@ async function attachMeter(p) {
   }
   if (p.role !== 'whisper' || p.meter || pipelines.get(p.tabId) !== p) return;
 
-  // Analyze the original (pre-pan) signal, limited to the whisper/sibilance band.
-  const hp = new BiquadFilterNode(ctx, { type: 'highpass', frequency: 1000 });
-  const lp = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 8000 });
+  // Analyze the original (pre-pan) signal.
   const node = new AudioWorkletNode(ctx, 'asmr-meter', {
     channelCount: 2,
     channelCountMode: 'explicit',
@@ -181,12 +195,10 @@ async function attachMeter(p) {
   // The meter outputs silence; connecting it keeps the graph pulling it.
   const mute = new GainNode(ctx, { gain: 0 });
   node.port.onmessage = (e) => onMeter(p, e.data);
-  p.source.connect(hp);
-  hp.connect(lp);
-  lp.connect(node);
+  p.source.connect(node);
   node.connect(mute);
   mute.connect(ctx.destination);
-  p.meter = { hp, lp, node, mute };
+  p.meter = { node, mute };
 }
 
 function detachMeter(p) {
@@ -194,21 +206,38 @@ function detachMeter(p) {
   if (!m) return;
   p.meter = null;
   m.node.port.onmessage = null;
-  try { p.source.disconnect(m.hp); } catch (e) {}
-  for (const n of [m.hp, m.lp, m.node, m.mute]) {
+  try { p.source.disconnect(m.node); } catch (e) {}
+  for (const n of [m.node, m.mute]) {
     try { n.disconnect(); } catch (e) {}
   }
   applyFollowers();
 }
 
-function onMeter(p, { l, r, dt }) {
+const levelDb = (l, r) => 20 * Math.log10((r + 1e-12) / (l + 1e-12));
+
+function onMeter(p, { l, r, bands, coh, dt }) {
   if (p.role !== 'whisper' || !p.meter) return;
   const lvl = Math.max(l, r);
   asmr.peak = Math.max(lvl, asmr.peak * Math.exp(-dt / PEAK_DECAY));
+  asmr.bothHold = Math.max(0, asmr.bothHold - dt);
   // Hold the last position through pauses between phrases.
   if (lvl < ABS_GATE || lvl < asmr.peak * REL_GATE) return;
-  const db = 20 * Math.log10((r + 1e-12) / (l + 1e-12));
-  const target = Math.max(-1, Math.min(1, db / FULL_SCALE_DB));
+
+  let bandL = false;
+  let bandR = false;
+  for (const [bl, br] of bands) {
+    if (Math.max(bl, br) < asmr.peak * BAND_GATE) continue;
+    const d = levelDb(bl, br);
+    if (d > SIDE_DB) bandR = true;
+    if (d < -SIDE_DB) bandL = true;
+  }
+  const both =
+    (bandL && bandR) ||
+    (Math.min(l, r) >= asmr.peak * REL_GATE && coh < COH_TWO);
+  asmr.twoFrac += ((both ? 1 : 0) - asmr.twoFrac) * (1 - Math.exp(-dt / TWO_SMOOTH));
+  if (asmr.twoFrac > TWO_ON) asmr.bothHold = BOTH_HOLD;
+
+  const target = asmr.bothHold > 0 ? 0 : Math.max(-1, Math.min(1, levelDb(l, r) / FULL_SCALE_DB));
   asmr.pos += (target - asmr.pos) * (1 - Math.exp(-dt / POS_SMOOTH));
   applyFollowers();
 }
