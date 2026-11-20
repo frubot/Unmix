@@ -5,7 +5,7 @@ const pipelines = new Map();
 // --- ASMR mode -------------------------------------------------------------
 // The whisper tab's left/right level difference is measured in the speech
 // band and mapped to a position (-1 = left .. 1 = right). Follower tabs are
-// panned to the opposite side (or the same side when `mirror` is false).
+// panned to the opposite side.
 // When each ear seems to hear a different sound (e.g. whispering on one side
 // and ear cleaning on the other), followers are centered instead.
 const ASMR_KEY = 'unmix.asmr';
@@ -26,7 +26,7 @@ const TWO_ON = 0.3; // share of recent frames showing both sides
 const BOTH_HOLD = 1.5; // seconds to stay centered after both sides were active
 
 const asmr = {
-  depth: 1, mirror: true, pos: 0, peak: 0,
+  depth: 1, pos: 0, peak: 0,
   twoFrac: 0, bothHold: 0
 };
 try {
@@ -249,7 +249,7 @@ function hasWhisper() {
 
 function applyFollowers() {
   const active = hasWhisper();
-  const v = (asmr.mirror ? -1 : 1) * asmr.pos * asmr.depth;
+  const v = -asmr.pos * asmr.depth;
   for (const p of pipelines.values()) {
     if (p.role !== 'follow') continue;
     const target = active ? v : p.pan;
@@ -257,9 +257,8 @@ function applyFollowers() {
   }
 }
 
-function applyAsmrConfig({ depth, mirror }) {
+function applyAsmrConfig({ depth }) {
   if (typeof depth === 'number' && isFinite(depth)) asmr.depth = Math.max(0, Math.min(1, depth));
-  if (typeof mirror === 'boolean') asmr.mirror = mirror;
 }
 
 function teardown(p) {

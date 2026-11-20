@@ -10,11 +10,10 @@ const $toggle = document.getElementById('showall');
 const $asmr = document.getElementById('asmr');
 const $asmrbar = document.getElementById('asmrbar');
 const $depth = document.getElementById('depth');
-const $dirBtns = [...$asmrbar.querySelectorAll('button[data-mirror]')];
 
-// Shared with offscreen.js (same extension origin), which reads depth/mirror on startup.
+// Shared with offscreen.js (same extension origin), which reads depth on startup.
 const ASMR_KEY = 'unmix.asmr';
-const asmrCfg = { on: false, depth: 1, mirror: true };
+const asmrCfg = { on: false, depth: 1 };
 try {
   Object.assign(asmrCfg, JSON.parse(localStorage.getItem(ASMR_KEY)) || {});
 } catch (e) {}
@@ -251,7 +250,6 @@ function renderAsmrBar() {
   $asmr.classList.toggle('sel', asmrCfg.on);
   $asmrbar.hidden = !asmrCfg.on;
   $depth.value = asmrCfg.depth;
-  $dirBtns.forEach((b) => b.classList.toggle('sel', (b.dataset.mirror === '1') === asmrCfg.mirror));
 }
 
 function saveAsmr() {
@@ -260,7 +258,7 @@ function saveAsmr() {
 
 function pushAsmr() {
   saveAsmr();
-  send({ type: 'asmr-config', depth: asmrCfg.depth, mirror: asmrCfg.mirror }).catch(() => {});
+  send({ type: 'asmr-config', depth: asmrCfg.depth }).catch(() => {});
 }
 
 $asmr.addEventListener('click', async () => {
@@ -280,14 +278,6 @@ $depth.addEventListener('input', () => {
   asmrCfg.depth = +$depth.value;
   pushAsmr();
 });
-
-$dirBtns.forEach((b) =>
-  b.addEventListener('click', () => {
-    asmrCfg.mirror = b.dataset.mirror === '1';
-    pushAsmr();
-    renderAsmrBar();
-  })
-);
 
 setInterval(async () => {
   if (!liveRows.size) return;
