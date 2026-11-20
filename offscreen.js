@@ -1,4 +1,4 @@
-// tabId -> { tabId, ctx, stream, source, panner, gain, pan, volume, role, livePan, meter }
+// tabId -> { tabId, ctx, stream, source, eq, panner, gain, pan, volume, role, livePan, liveEq, meter }
 // role: 'none' | 'whisper' (ASMR source being analyzed) | 'follow' (pan driven by the whisper)
 const pipelines = new Map();
 
@@ -7,7 +7,9 @@ const pipelines = new Map();
 // band and mapped to a position (-1 = left .. 1 = right). Follower tabs are
 // panned to the opposite side.
 // When each ear seems to hear a different sound (e.g. whispering on one side
-// and ear cleaning on the other), followers are centered instead.
+// and ear cleaning on the other), followers are centered instead, and their
+// EQ is cut in the bands where the whisper tab is loud so the two don't mask
+// each other.
 const ASMR_KEY = 'unmix.asmr';
 const FULL_SCALE_DB = 12; // L/R level difference treated as fully one-sided
 const ABS_GATE = 3e-4; // ~-70 dBFS: below this the whisper is treated as silent
@@ -24,10 +26,21 @@ const BAND_GATE = 0.1; // sub-band ignored below this fraction of the recent pea
 const TWO_SMOOTH = 0.3; // seconds
 const TWO_ON = 0.3; // share of recent frames showing both sides
 const BOTH_HOLD = 1.5; // seconds to stay centered after both sides were active
+// Follower EQ while centered: one peaking filter per meter sub-band
+// (asmr-meter.js BANDS). Cut depth follows the whisper's long-term spectrum.
+const EQ_BANDS = [
+  { f: 1300, q: 0.75 },
+  { f: 3900, q: 1.1 },
+  { f: 8500, q: 1.4 }
+];
+const EQ_RANGE_DB = 18; // bands this far below the loudest whisper band get no cut
+const EQ_AVG = 1.5; // seconds: smoothing of the whisper spectrum
+const EQ_GLIDE = 0.25; // seconds
 
 const asmr = {
-  depth: 1, pos: 0, peak: 0,
-  twoFrac: 0, bothHold: 0
+  depth: 1, eq: 6, pos: 0, peak: 0,
+  twoFrac: 0, bothHold: 0,
+  bandAvg: EQ_BANDS.map(() => 0)
 };
 try {
   applyAsmrConfig(JSON.parse(localStorage.getItem(ASMR_KEY)) || {});
@@ -102,17 +115,22 @@ async function add({ tabId, streamId, pan = 0, volume = 1 }) {
   await ctx.resume().catch(() => {});
 
   const source = ctx.createMediaStreamSource(stream);
+  const eq = EQ_BANDS.map(({ f, q }) =>
+    new BiquadFilterNode(ctx, { type: 'peaking', frequency: f, Q: q, gain: 0 })
+  );
   const panner = ctx.createStereoPanner();
   const gain = ctx.createGain();
   panner.pan.value = pan;
   gain.gain.value = volume;
-  source.connect(panner);
+  source.connect(eq[0]);
+  for (let i = 1; i < eq.length; i++) eq[i - 1].connect(eq[i]);
+  eq[eq.length - 1].connect(panner);
   panner.connect(gain);
   gain.connect(ctx.destination);
 
   const p = {
-    tabId, ctx, stream, source, panner, gain, pan, volume,
-    role: 'none', livePan: pan, meter: null, workletLoaded: null
+    tabId, ctx, stream, source, eq, panner, gain, pan, volume,
+    role: 'none', livePan: pan, liveEq: eq.map(() => 0), meter: null, workletLoaded: null
   };
   pipelines.set(tabId, p);
 
@@ -147,12 +165,23 @@ function glidePan(p, v, tau) {
   p.panner.pan.setTargetAtTime(v, p.ctx.currentTime, tau);
 }
 
+function glideEq(p, gains, tau) {
+  gains.forEach((g, i) => {
+    if (Math.abs(g - p.liveEq[i]) < 0.1) return;
+    p.liveEq[i] = g;
+    p.eq[i].gain.setTargetAtTime(g, p.ctx.currentTime, tau);
+  });
+}
+
 async function setRole(p, role) {
   if (!['none', 'whisper', 'follow'].includes(role) || p.role === role) return;
   const prev = p.role;
   p.role = role;
   if (prev === 'whisper') detachMeter(p);
-  if (prev === 'follow') glidePan(p, p.pan, 0.05);
+  if (prev === 'follow') {
+    glidePan(p, p.pan, 0.05);
+    glideEq(p, p.eq.map(() => 0), EQ_GLIDE);
+  }
   if (role === 'whisper') {
     // Only one whisper source at a time.
     for (const o of pipelines.values()) {
@@ -165,6 +194,7 @@ async function setRole(p, role) {
     asmr.peak = 0;
     asmr.twoFrac = 0;
     asmr.bothHold = 0;
+    asmr.bandAvg.fill(0);
     try {
       await attachMeter(p);
     } catch (e) {
@@ -223,6 +253,11 @@ function onMeter(p, { l, r, bands, coh, dt }) {
   // Hold the last position through pauses between phrases.
   if (lvl < ABS_GATE || lvl < asmr.peak * REL_GATE) return;
 
+  const k = 1 - Math.exp(-dt / EQ_AVG);
+  bands.forEach(([bl, br], i) => {
+    asmr.bandAvg[i] += (Math.hypot(bl, br) - asmr.bandAvg[i]) * k;
+  });
+
   let bandL = false;
   let bandR = false;
   for (const [bl, br] of bands) {
@@ -247,24 +282,41 @@ function hasWhisper() {
   return false;
 }
 
+// Cut (dB, <= 0) per EQ band: deepest where the whisper is loudest.
+function eqCuts() {
+  const top = Math.max(...asmr.bandAvg);
+  return asmr.bandAvg.map((a) => {
+    if (!(top > 0) || asmr.eq <= 0) return 0;
+    const rel = 20 * Math.log10((a + 1e-12) / top); // <= 0
+    return -asmr.eq * Math.max(0, 1 + rel / EQ_RANGE_DB);
+  });
+}
+
 function applyFollowers() {
   const active = hasWhisper();
   const v = -asmr.pos * asmr.depth;
+  const flat = EQ_BANDS.map(() => 0);
+  const cuts = active && asmr.bothHold > 0 ? eqCuts() : flat;
   for (const p of pipelines.values()) {
     if (p.role !== 'follow') continue;
     const target = active ? v : p.pan;
     if (Math.abs(target - p.livePan) > 0.002) glidePan(p, target, PAN_GLIDE);
+    glideEq(p, cuts, EQ_GLIDE);
   }
 }
 
-function applyAsmrConfig({ depth }) {
+function applyAsmrConfig({ depth, eq }) {
   if (typeof depth === 'number' && isFinite(depth)) asmr.depth = Math.max(0, Math.min(1, depth));
+  if (typeof eq === 'number' && isFinite(eq)) asmr.eq = Math.max(0, Math.min(12, eq));
 }
 
 function teardown(p) {
   pipelines.delete(p.tabId);
   detachMeter(p);
   try { p.source.disconnect(); } catch (e) {}
+  for (const n of p.eq) {
+    try { n.disconnect(); } catch (e) {}
+  }
   try { p.panner.disconnect(); } catch (e) {}
   try { p.gain.disconnect(); } catch (e) {}
   p.stream.getTracks().forEach((t) => { try { t.stop(); } catch (e) {} });

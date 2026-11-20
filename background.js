@@ -32,7 +32,7 @@ async function handle(msg) {
       return { ok: true };
     case 'asmr-config':
       if (await chrome.offscreen.hasDocument()) {
-        await sendToOffscreen({ type: 'asmr-config', depth: msg.depth }).catch(() => {});
+        await sendToOffscreen({ type: 'asmr-config', depth: msg.depth, eq: msg.eq }).catch(() => {});
       }
       return { ok: true };
     case 'live':
